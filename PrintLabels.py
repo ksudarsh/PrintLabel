@@ -50,9 +50,9 @@ import math
 import os
 import sys
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from reportlab.lib.colors import HexColor, black, lightgrey
+from reportlab.lib.colors import HexColor, lightgrey
 from reportlab.lib.pagesizes import letter, A4, legal
 from reportlab.lib.units import inch
 from reportlab.pdfbase.pdfmetrics import stringWidth
@@ -464,7 +464,6 @@ def generate_pdf(
     labels_per_page = layout.cols * layout.rows
 
     for idx, rec in enumerate(records):
-        page_index = idx // labels_per_page
         position = idx % labels_per_page
 
         if idx > 0 and position == 0:
@@ -584,8 +583,11 @@ def main():
         sys.exit(1)
 
     try:
-        output_records = records + sender_records if sender_records and not sender_output_path else records
-        output_title_flags = ([True] * len(records)) + ([False] * len(sender_records)) if sender_records and not sender_output_path else None
+        output_records = records
+        output_title_flags = None
+        if sender_records and not sender_output_path:
+            output_records = records + sender_records
+            output_title_flags = ([True] * len(records)) + ([False] * len(sender_records))
         generate_pdf(
             records=output_records,
             output_path=output_path,
