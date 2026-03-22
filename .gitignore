@@ -1,3 +1,5 @@
 *
 !PrintLabels.py
 !.gitignore
+!.vscode/
+!.vscode/launch.json
