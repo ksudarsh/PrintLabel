@@ -35,11 +35,41 @@ Specify CSV and paper:
 More control:
     python PrintLabels.py --csv addresses.csv --paper a4 --output labels.pdf --title-gap 10 --cols 2 --margin 0.5
 
+More spacing control from the command line:
+    python PrintLabels.py --csv addresses.csv --paper letter --margin 0.35 --hgap 0.1 --vgap 0.05
+
+Examples of what changes what:
+- `--margin 0.35` changes the outer page margin on all four sides
+- `--hgap 0.1` changes the white space between left/right label columns
+- `--vgap 0.05` changes the white space between label rows
+- `--cols 2` changes how many labels fit across the page
+- `--rows 8` forces a fixed number of rows for normal full-page layouts
+- `--title-gap 10` changes the space between the title and recipient name
+
 With sender labels too:
     python PrintLabels.py --csv recipients.csv --sender-csv sender.csv --paper letter
 
 Supported paper sizes:
     letter, a4, legal
+
+Quick layout tuning in code
+---------------------------
+If you want to fine-tune the look beyond command-line options, edit the constants below:
+
+- `LABEL_PAD_X`: left/right inner padding inside recipient/to labels
+- `SENDER_LABEL_PAD_X`: left/right inner padding inside sender/from labels
+- `LABEL_PAD_TOP`: top inner padding inside every label
+- `LABEL_PAD_BOTTOM`: bottom inner padding inside every label
+- `TITLE_TOP_OFFSET`: extra white space above the title
+- `DEFAULT_TITLE_GAP`: white space between the title block and recipient name
+- `NAME_GAP_AFTER`: white space between the name and first address line
+- `ADDR_FONT_SIZE`: address text size
+- `ADDR_LINE_STEP`: vertical spacing between address lines
+- `SENDER_TOP_OFFSET`: top padding used by sender/from labels
+- `SENDER_MAX_TEXT_WIDTH`: width of the text block used by sender/from labels
+- `ROW_HEIGHT_SLACK`: extra safety room added to computed label heights
+- `RECIPIENT_ROWS_PER_PAGE`: number of recipient rows reserved on combined pages
+- `SENDER_ROWS_PER_PAGE`: number of compact sender rows on sender-only pages
 """
 
 from __future__ import annotations
@@ -62,19 +92,41 @@ from reportlab.pdfgen import canvas
 # ----------------------------
 # Configuration / defaults
 # ----------------------------
+#
+# These constants control the visual look of the labels.
+# Fastest way to tune whitespace:
+# - More left/right inner white space on recipient labels: increase LABEL_PAD_X
+# - More left/right inner white space on sender labels: increase SENDER_LABEL_PAD_X
+# - More top white space: increase LABEL_PAD_TOP
+# - More bottom white space: increase LABEL_PAD_BOTTOM
+# - More gap above the title: increase TITLE_TOP_OFFSET
+# - More gap between title and recipient name: increase DEFAULT_TITLE_GAP
+# - More gap between name and address: increase NAME_GAP_AFTER
+# - Wider sender text block: increase SENDER_MAX_TEXT_WIDTH
+# - Taller labels overall: increase ROW_HEIGHT_SLACK
+# Command-line spacing options:
+# - --margin controls outer page margins
+# - --hgap controls horizontal gap between columns
+# - --vgap controls vertical gap between rows
+# - --cols / --rows control grid density
 
 TITLE_TEXT = "Mantrakshata Prasadam"
 DEFAULT_TITLE_GAP = 14.0
-LABEL_PAD_X = 0.18 * inch
-LABEL_PAD_Y = 0.15 * inch
-TITLE_TOP_OFFSET = 0.18 * inch
+LABEL_PAD_X = 0.5 * inch
+SENDER_LABEL_PAD_X = 0.25 * inch
+LABEL_PAD_TOP = 0.12 * inch
+LABEL_PAD_BOTTOM = 0.12 * inch
+TITLE_TOP_OFFSET = 0.12 * inch
 TITLE_UNDERLINE_GAP = 2
 TITLE_UNDERLINE_AFTER = 4
 NAME_GAP_AFTER = 3
 ADDR_FONT_SIZE = 10.5
 ADDR_LINE_STEP = ADDR_FONT_SIZE + 2
-SENDER_TOP_OFFSET = 0.38 * inch
-SENDER_MAX_TEXT_WIDTH = 2.35 * inch
+SENDER_TOP_OFFSET = 0.16 * inch
+SENDER_MAX_TEXT_WIDTH = 2.0 * inch
+ROW_HEIGHT_SLACK = 0.04 * inch
+RECIPIENT_ROWS_PER_PAGE = 5
+SENDER_ROWS_PER_PAGE = 6
 
 PAPER_SIZES = {
     "letter": letter,
@@ -113,6 +165,20 @@ class Layout:
     v_gap: float
     label_width: float
     label_height: float
+
+
+@dataclass
+class CombinedLayout:
+    page_width: float
+    page_height: float
+    margin: float
+    cols: int
+    h_gap: float
+    v_gap: float
+    label_width: float
+    recipient_rows: int
+    recipient_label_height: float
+    sender_label_height: float
 
 
 # ----------------------------
@@ -213,8 +279,12 @@ def label_address_lines(rec: LabelRecord, inner_w: float) -> List[str]:
     return lines
 
 
+def label_pad_x(show_title: bool) -> float:
+    return LABEL_PAD_X if show_title else SENDER_LABEL_PAD_X
+
+
 def inner_text_width(label_width: float, show_title: bool) -> float:
-    available = label_width - 2 * LABEL_PAD_X
+    available = label_width - 2 * label_pad_x(show_title)
     if available <= 0:
         raise ValueError("Label width is too small for the configured padding.")
     if show_title:
@@ -243,7 +313,14 @@ def measure_label_height(rec: LabelRecord, label_width: float, title_gap: float,
     else:
         title_height = SENDER_TOP_OFFSET
 
-    return LABEL_PAD_Y + title_height + name_size + NAME_GAP_AFTER + len(lines) * ADDR_LINE_STEP + LABEL_PAD_Y
+    return (
+        LABEL_PAD_TOP
+        + title_height
+        + name_size
+        + NAME_GAP_AFTER
+        + len(lines) * ADDR_LINE_STEP
+        + LABEL_PAD_BOTTOM
+    )
 
 
 def compute_layout(
@@ -255,6 +332,7 @@ def compute_layout(
     h_gap_inch: float,
     v_gap_inch: float,
     min_label_height: Optional[float] = None,
+    fixed_label_height: Optional[float] = None,
 ) -> Layout:
     margin = margin_inch * inch
     h_gap = h_gap_inch * inch
@@ -263,7 +341,7 @@ def compute_layout(
     label_width = compute_label_width(page_width, margin_inch, cols, h_gap_inch)
 
     if rows is None:
-        target_label_height = min_label_height or (2.0 * inch)
+        target_label_height = fixed_label_height or ((min_label_height + ROW_HEIGHT_SLACK) if min_label_height else (2.0 * inch))
         rows_guess = int((page_height - 2 * margin + v_gap) // (target_label_height + v_gap))
         rows = max(1, rows_guess)
 
@@ -271,7 +349,14 @@ def compute_layout(
     if usable_height <= 0:
         raise ValueError("Margins/gaps too large for selected paper height.")
 
-    label_height = usable_height / rows
+    label_height = fixed_label_height if fixed_label_height is not None else (usable_height / rows)
+    if fixed_label_height is not None:
+        required_height = rows * fixed_label_height
+        if required_height > usable_height:
+            raise ValueError(
+                "Label content does not fit with the current page/layout settings. "
+                "Reduce rows, margins, gaps, or title gap."
+            )
     if min_label_height is not None and label_height < min_label_height:
         raise ValueError(
             "Label content does not fit with the current page/layout settings. "
@@ -288,6 +373,46 @@ def compute_layout(
         v_gap=v_gap,
         label_width=label_width,
         label_height=label_height,
+    )
+
+
+def compute_combined_layout(
+    page_width: float,
+    page_height: float,
+    margin_inch: float,
+    cols: int,
+    h_gap_inch: float,
+    v_gap_inch: float,
+    recipient_min_height: float,
+    sender_min_height: float,
+) -> CombinedLayout:
+    margin = margin_inch * inch
+    h_gap = h_gap_inch * inch
+    v_gap = v_gap_inch * inch
+    label_width = compute_label_width(page_width, margin_inch, cols, h_gap_inch)
+
+    sender_label_height = sender_min_height + ROW_HEIGHT_SLACK
+    recipient_label_height = recipient_min_height + ROW_HEIGHT_SLACK
+    total_row_gaps = RECIPIENT_ROWS_PER_PAGE * v_gap
+    required_height = (RECIPIENT_ROWS_PER_PAGE * recipient_label_height) + sender_label_height + total_row_gaps
+    available_height = page_height - 2 * margin
+    if required_height > available_height:
+        raise ValueError(
+            "Recipient and sender labels do not fit in the configured six-row page layout. "
+            "Reduce margins, gaps, title gap, or columns."
+        )
+
+    return CombinedLayout(
+        page_width=page_width,
+        page_height=page_height,
+        margin=margin,
+        cols=cols,
+        h_gap=h_gap,
+        v_gap=v_gap,
+        label_width=label_width,
+        recipient_rows=RECIPIENT_ROWS_PER_PAGE,
+        recipient_label_height=recipient_label_height,
+        sender_label_height=sender_label_height,
     )
 
 
@@ -404,8 +529,8 @@ def draw_label(
         c.rect(x, y, w, h, stroke=1, fill=0)
 
     inner_w = inner_text_width(w, show_title)
-    inner_x = x + (w - inner_w) / 2
-    inner_y_top = y + h - LABEL_PAD_Y
+    inner_x = x + label_pad_x(show_title)
+    inner_y_top = y + h - LABEL_PAD_TOP
 
     cursor_y = inner_y_top
 
@@ -444,7 +569,7 @@ def draw_label(
 
     c.setFont(addr_font, addr_size)
     for line in lines:
-        if cursor_y < y + LABEL_PAD_Y:
+        if cursor_y < y + LABEL_PAD_BOTTOM:
             break
         c.drawString(inner_x, cursor_y, line)
         cursor_y -= line_step
@@ -492,6 +617,122 @@ def generate_pdf(
             show_title=show_title,
             show_cut_lines=show_cut_lines,
         )
+
+    c.save()
+
+
+def draw_combined_page(
+    c: canvas.Canvas,
+    recipient_records: List[LabelRecord],
+    sender_records: List[LabelRecord],
+    layout: CombinedLayout,
+    title_gap_points: float,
+    show_cut_lines: bool,
+):
+    for idx, rec in enumerate(recipient_records):
+        row = idx // layout.cols
+        col = idx % layout.cols
+        x = layout.margin + col * (layout.label_width + layout.h_gap)
+        y = (
+            layout.page_height
+            - layout.margin
+            - (row + 1) * layout.recipient_label_height
+            - row * layout.v_gap
+        )
+        draw_label(
+            c,
+            rec,
+            x,
+            y,
+            layout.label_width,
+            layout.recipient_label_height,
+            title_gap=title_gap_points,
+            show_title=True,
+            show_cut_lines=show_cut_lines,
+        )
+
+    sender_y = layout.margin
+    sender_row_capacity = layout.cols
+    for idx, rec in enumerate(sender_records[:sender_row_capacity]):
+        col = idx % layout.cols
+        x = layout.margin + col * (layout.label_width + layout.h_gap)
+        draw_label(
+            c,
+            rec,
+            x,
+            sender_y,
+            layout.label_width,
+            layout.sender_label_height,
+            title_gap=title_gap_points,
+            show_title=False,
+            show_cut_lines=show_cut_lines,
+        )
+
+
+def generate_combined_pdf(
+    records: List[LabelRecord],
+    sender_records: List[LabelRecord],
+    output_path: str,
+    layout: CombinedLayout,
+    sender_layout: Layout,
+    title_gap_points: float,
+    show_cut_lines: bool,
+):
+    c = canvas.Canvas(output_path, pagesize=(layout.page_width, layout.page_height))
+    c.setTitle("Mantrakshata Prasadam Labels")
+
+    recipient_capacity = layout.cols * layout.recipient_rows
+    sender_first_page_capacity = layout.cols
+
+    recipient_index = 0
+    sender_index = 0
+    while recipient_index < len(records):
+        page_recipients = records[recipient_index:recipient_index + recipient_capacity]
+        page_senders: List[LabelRecord] = []
+        if recipient_index + len(page_recipients) >= len(records) and sender_index < len(sender_records):
+            page_senders = sender_records[sender_index:sender_index + sender_first_page_capacity]
+            sender_index += len(page_senders)
+
+        draw_combined_page(
+            c,
+            page_recipients,
+            page_senders,
+            layout,
+            title_gap_points=title_gap_points,
+            show_cut_lines=show_cut_lines,
+        )
+        recipient_index += len(page_recipients)
+        if recipient_index < len(records) or sender_index < len(sender_records):
+            c.showPage()
+
+    remaining_senders = sender_records[sender_index:]
+    if remaining_senders:
+        labels_per_page = sender_layout.cols * sender_layout.rows
+        for idx, rec in enumerate(remaining_senders):
+            position = idx % labels_per_page
+            if idx > 0 and position == 0:
+                c.showPage()
+
+            row = position // sender_layout.cols
+            col = position % sender_layout.cols
+            x = sender_layout.margin + col * (sender_layout.label_width + sender_layout.h_gap)
+            y = (
+                sender_layout.page_height
+                - sender_layout.margin
+                - (row + 1) * sender_layout.label_height
+                - row * sender_layout.v_gap
+            )
+            draw_label(
+                c,
+                rec,
+                x,
+                y,
+                sender_layout.label_width,
+                sender_layout.label_height,
+                title_gap=title_gap_points,
+                show_title=False,
+                show_cut_lines=show_cut_lines,
+            )
 
     c.save()
 
@@ -563,64 +804,107 @@ def main():
 
     try:
         page_width, page_height = paper_size_from_name(paper_name)
-        label_width = compute_label_width(page_width, args.margin, max(1, args.cols), args.hgap)
-        min_label_height = max([
-            *(measure_label_height(rec, label_width, max(0, args.title_gap), show_title=True) for rec in records),
-            *(measure_label_height(rec, label_width, max(0, args.title_gap), show_title=False) for rec in sender_records or []),
-        ])
+        cols = max(1, args.cols)
+        label_width = compute_label_width(page_width, args.margin, cols, args.hgap)
+        recipient_min_height = max(
+            measure_label_height(rec, label_width, max(0, args.title_gap), show_title=True)
+            for rec in records
+        )
         layout = compute_layout(
             page_width=page_width,
             page_height=page_height,
             margin_inch=args.margin,
-            cols=max(1, args.cols),
+            cols=cols,
             rows=args.rows,
             h_gap_inch=args.hgap,
             v_gap_inch=args.vgap,
-            min_label_height=min_label_height,
+            min_label_height=recipient_min_height,
         )
+        sender_layout = None
+        combined_layout = None
+        if sender_records:
+            sender_min_height = max(
+                measure_label_height(rec, label_width, max(0, args.title_gap), show_title=False)
+                for rec in sender_records
+            )
+            sender_label_height = sender_min_height + ROW_HEIGHT_SLACK
+            sender_layout = compute_layout(
+                page_width=page_width,
+                page_height=page_height,
+                margin_inch=args.margin,
+                cols=cols,
+                rows=SENDER_ROWS_PER_PAGE,
+                h_gap_inch=args.hgap,
+                v_gap_inch=args.vgap,
+                min_label_height=sender_min_height,
+                fixed_label_height=sender_label_height,
+            )
+            if not sender_output_path:
+                combined_layout = compute_combined_layout(
+                    page_width=page_width,
+                    page_height=page_height,
+                    margin_inch=args.margin,
+                    cols=cols,
+                    h_gap_inch=args.hgap,
+                    v_gap_inch=args.vgap,
+                    recipient_min_height=recipient_min_height,
+                    sender_min_height=sender_min_height,
+                )
     except Exception as e:
         print(f"\nLayout error:\n{e}")
         sys.exit(1)
 
     try:
-        output_records = records
-        output_title_flags = None
         if sender_records and not sender_output_path:
-            output_records = records + sender_records
-            output_title_flags = ([True] * len(records)) + ([False] * len(sender_records))
-        generate_pdf(
-            records=output_records,
-            output_path=output_path,
-            layout=layout,
-            title_gap_points=max(0, args.title_gap),
-            show_cut_lines=not args.no_cut_lines,
-            title_flags=output_title_flags,
-        )
-        if sender_records and sender_output_path:
+            generate_combined_pdf(
+                records=records,
+                sender_records=sender_records,
+                output_path=output_path,
+                layout=combined_layout,
+                sender_layout=sender_layout,
+                title_gap_points=max(0, args.title_gap),
+                show_cut_lines=not args.no_cut_lines,
+            )
+        else:
             generate_pdf(
-                records=sender_records,
-                output_path=sender_output_path,
+                records=records,
+                output_path=output_path,
                 layout=layout,
                 title_gap_points=max(0, args.title_gap),
                 show_cut_lines=not args.no_cut_lines,
-                title_flags=[False] * len(sender_records),
             )
+            if sender_records and sender_output_path:
+                generate_pdf(
+                    records=sender_records,
+                    output_path=sender_output_path,
+                    layout=sender_layout,
+                    title_gap_points=max(0, args.title_gap),
+                    show_cut_lines=not args.no_cut_lines,
+                    title_flags=[False] * len(sender_records),
+                )
     except Exception as e:
         print(f"\nError generating PDF:\n{e}")
         sys.exit(1)
 
     labels_per_page = layout.cols * layout.rows
     page_count = math.ceil(len(records) / labels_per_page)
+    if sender_records and not sender_output_path:
+        recipient_slots = combined_layout.cols * combined_layout.recipient_rows
+        sender_tail_pages = math.ceil(max(0, len(sender_records) - combined_layout.cols) / (sender_layout.cols * sender_layout.rows))
+        page_count = max(1, math.ceil(len(records) / recipient_slots)) + sender_tail_pages
 
     print("\nDone.")
     print(f"CSV rows used: {len(records)}")
     print(f"Output PDF: {output_path}")
     if sender_records and not sender_output_path:
         print(f"Sender labels appended in same PDF: {len(sender_records)}")
+        print(f"Recipient layout: {combined_layout.cols} columns x {combined_layout.recipient_rows} rows on top")
+        print(f"Sender layout: {combined_layout.cols} columns starting on row 6, then {sender_layout.rows} compact rows/page")
     if sender_output_path:
         print(f"Sender output PDF: {sender_output_path}")
     print(f"Paper size: {paper_name}")
-    print(f"Layout: {layout.cols} columns x {layout.rows} rows = {labels_per_page} labels/page")
+    if not sender_records or sender_output_path:
+        print(f"Layout: {layout.cols} columns x {layout.rows} rows = {labels_per_page} labels/page")
     print(f"Pages: {page_count}")
     print("\nPrint settings:")
     print("- Print at 100% / Actual Size")
