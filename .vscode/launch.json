@@ -9,7 +9,7 @@
       "program": "${workspaceFolder}/PrintLabels.py",
       "console": "integratedTerminal",
       "args": [
-        "--csv",
+        "--recipient-csv",
         "D:/Backup/Krishna/Parakala Math/Seva Dinam/Seva_Dinam_List.csv",
         "--sender-csv",
         "D:/Backup/Krishna/Parakala Math/Seva Dinam/Seva_Dinam_Sender.csv",

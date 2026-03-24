@@ -30,13 +30,13 @@ Interactive:
     python PrintLabels.py
 
 Specify CSV and paper:
-    python PrintLabels.py --csv addresses.csv --paper letter
+    python PrintLabels.py --recipient-csv addresses.csv --paper letter
 
 More control:
-    python PrintLabels.py --csv addresses.csv --paper a4 --output labels.pdf --title-gap 10 --cols 2 --margin 0.5
+    python PrintLabels.py --recipient-csv addresses.csv --paper a4 --output labels.pdf --title-gap 10 --cols 2 --margin 0.5
 
 More spacing control from the command line:
-    python PrintLabels.py --csv addresses.csv --paper letter --margin 0.35 --hgap 0.1 --vgap 0.05
+    python PrintLabels.py --recipient-csv addresses.csv --paper letter --margin 0.35 --hgap 0.1 --vgap 0.05
 
 Examples of what changes what:
 - `--margin 0.35` changes the outer page margin on all four sides
@@ -47,7 +47,7 @@ Examples of what changes what:
 - `--title-gap 10` changes the space between the title and recipient name
 
 With sender labels too:
-    python PrintLabels.py --csv recipients.csv --sender-csv sender.csv --paper letter
+    python PrintLabels.py --recipient-csv recipients.csv --sender-csv sender.csv --paper letter
 
 Supported paper sizes:
     letter, a4, legal
@@ -743,7 +743,7 @@ def generate_combined_pdf(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Create printable mailing label PDFs from a CSV.")
-    p.add_argument("--csv", help="Path to input CSV")
+    p.add_argument("--recipient-csv", dest="recipient_csv", help="Path to recipient CSV")
     p.add_argument("--sender-csv", help="Path to sender CSV containing exactly one address row")
     p.add_argument("--paper", choices=sorted(PAPER_SIZES.keys()), help="Paper size: letter, a4, legal")
     p.add_argument("--output", help="Output PDF path")
@@ -762,10 +762,10 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    csv_path = args.csv or prompt_if_missing("Enter path to CSV file")
-    while not os.path.isfile(csv_path):
-        print(f"File not found: {csv_path}")
-        csv_path = prompt_if_missing("Enter a valid path to CSV file")
+    recipient_csv_path = args.recipient_csv or prompt_if_missing("Enter path to recipient CSV file")
+    while not os.path.isfile(recipient_csv_path):
+        print(f"File not found: {recipient_csv_path}")
+        recipient_csv_path = prompt_if_missing("Enter a valid path to recipient CSV file")
 
     paper_name = args.paper or prompt_if_missing("Paper size (letter / a4 / legal)", "letter").lower()
     while paper_name not in PAPER_SIZES:
@@ -774,7 +774,7 @@ def main():
 
     output_path = args.output
     if not output_path:
-        output_path = default_output_path(csv_path, paper_name)
+        output_path = default_output_path(recipient_csv_path, paper_name)
 
     sender_csv_path = args.sender_csv
     if sender_csv_path:
@@ -783,7 +783,7 @@ def main():
             sender_csv_path = prompt_if_missing("Enter a valid path to sender CSV file")
 
     try:
-        records = read_csv_records(csv_path)
+        records = read_csv_records(recipient_csv_path)
     except Exception as e:
         print(f"\nError reading CSV:\n{e}")
         sys.exit(1)
